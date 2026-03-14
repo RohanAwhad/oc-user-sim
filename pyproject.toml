@@ -3,7 +3,11 @@ name = "oc-user-sim"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
     "anthropic[vertex]>=0.84.0",
+    "training-hub",
 ]
+
+[tool.uv.sources]
+training-hub = { git = "https://github.com/Red-Hat-AI-Innovation-Team/training_hub.git", rev = "v0.6.0" }
