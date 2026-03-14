@@ -1,10 +1,37 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from anthropic import AnthropicVertex
+
+VERTEX_PROJECT_ID = os.environ["ANTHROPIC_VERTEX_PROJECT_ID"]
+VERTEX_REGION = os.environ.get(
+    "VERTEX_LOCATION", os.environ.get("CLOUD_ML_REGION", "global")
+)
+LLM_CLIENT = AnthropicVertex(project_id=VERTEX_PROJECT_ID, region=VERTEX_REGION)
+SONNET_MODEL = "claude-sonnet-4-5@20250929"
+QUALITY_GATE_MAX_TURNS = 6
+QUALITY_GATE_SYSTEM_PROMPT = """You filter Opencode conversation sessions for a user-simulator training dataset.
+
+Approve a session only if the visible turns look like a coherent real human<->assistant conversation and the early turns establish a useful interaction pattern.
+
+Approve when all of these are true:
+- the transcript is readable and coherent
+- the user appears to be making real requests or follow-ups
+- the assistant replies are visible natural-language responses, not just tool noise
+- the first few turns are enough to judge the interaction as useful training data
+
+Reject when any of these are true:
+- the transcript is malformed, truncated, duplicated, or mostly boilerplate
+- the visible turns are dominated by pasted logs, giant tables, or raw artifacts with little conversational value
+- the conversation is too fragmentary or contextless to judge
+- the session is mostly workflow noise, synthetic control text, or obviously bad training data
+
+Output exactly one word: APPROVE or REJECT."""
 
 
 @dataclass
@@ -169,6 +196,64 @@ def convert_messages_to_turns(messages: list[dict[str, Any]]) -> list[dict[str, 
     return turns
 
 
+def does_sonnet_approve(turns: list[dict[str, str]]) -> bool:
+    selected_turns = turns[:QUALITY_GATE_MAX_TURNS]
+    prompt = "\n\n---\n\n".join(
+        [f"{turn['role'].upper()}:\n{turn['content']}" for turn in selected_turns]
+    )
+
+    response = LLM_CLIENT.messages.create(
+        model=SONNET_MODEL,
+        max_tokens=4096,
+        system=QUALITY_GATE_SYSTEM_PROMPT,
+        messages=[
+            {"role": "user", "content": prompt},
+        ],
+        thinking={
+            "type": "enabled",
+            "budget_tokens": 4000,
+        },
+        output_config={
+            "format": {
+                "type": "json_schema",
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "approval": {
+                            "type": "string",
+                            "enum": ["APPROVE", "REJECT"],
+                            "description": "Whether the conversation is approved for training data",
+                        },
+                    },
+                },
+                "required": ["approval"],
+                "additionalProperties": False,
+            },
+        },
+    )
+    return json.loads(response.content[0].text.strip())["approval"].upper() == "APPROVE"
+
+
+
+def reverse_roles_in_turns(turns: list[dict[str, str]]) -> list[dict[str, str]]:
+    reversed_turns = []
+
+    for turn in turns:
+        reversed_role = turn["role"]
+        if turn["role"] == "user":
+            reversed_role = "assistant"
+        elif turn["role"] == "assistant":
+            reversed_role = "user"
+
+        reversed_turns.append(
+            {
+                "role": reversed_role,
+                "content": turn["content"],
+            }
+        )
+
+    return reversed_turns
+
 if __name__ == "__main__":
     STATE.sessions = load_sessions()
     print("Number of sessions:", len(STATE.sessions))
@@ -184,10 +269,19 @@ if __name__ == "__main__":
             print(f"{turn['role']}: {turn['content']}")
             print()
 
-        if do_have_more_than_one_user_message(turns):
-            print("Have more than one user message")
-            exit()
-        else:
+        if not do_have_more_than_one_user_message(turns):
             print("Do not have more than one user message")
+            continue
+        
+        if not does_sonnet_approve(turns):
+            print("Sonnet did not approve")
+            continue
+
+        reversed_turns = reverse_roles_in_turns(turns)
+        print("Number of reversed turns:", len(reversed_turns))
+        for turn in reversed_turns:
+            print(f"{turn['role']}: {turn['content']}")
+            print()
 
         print('--------------------------------')
+        exit()
