@@ -118,15 +118,33 @@ def get_message_content(message: dict[str, Any]) -> str:
     return "".join(text_parts)
 
 
+def convert_messages_to_turns(messages: list[dict[str, Any]]) -> list[dict[str, str]]:
+    filtered_messages = drop_non_text_assistant_messages(messages)
+    turns = []
+
+    for message in filtered_messages:
+        message_data = json.loads(message["data"])
+        content = get_message_content(message)
+        if not content:
+            continue
+
+        turns.append(
+            {
+                "role": message_data["role"],
+                "content": content,
+            }
+        )
+
+    return turns
+
+
 if __name__ == "__main__":
     STATE.sessions = load_sessions()
     print(len(STATE.sessions))
-    messages = load_messages_for_session(STATE.sessions[0])
+    messages = load_messages_for_session(STATE.sessions[34])
     print(len(messages))
-    filtered_messages = drop_non_text_assistant_messages(messages)
-    print(len(filtered_messages))
-    for message in filtered_messages:
-        msg_data = json.loads(message["data"])
-        content = get_message_content(message)
-        print(f"{msg_data['role']}: {content}")
+    turns = convert_messages_to_turns(messages)
+    print(len(turns))
+    for turn in turns:
+        print(f"{turn['role']}: {turn['content']}")
         print()
