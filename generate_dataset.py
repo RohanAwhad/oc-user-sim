@@ -15,23 +15,36 @@ VERTEX_REGION = os.environ.get(
 LLM_CLIENT = AnthropicVertex(project_id=VERTEX_PROJECT_ID, region=VERTEX_REGION)
 SONNET_MODEL = "claude-sonnet-4-5@20250929"
 QUALITY_GATE_MAX_TURNS = 6
+QUALITY_GATE_THINKING_BUDGET = 1024
+QUALITY_GATE_REPAIR_MAX_TOKENS = 256
 QUALITY_GATE_SYSTEM_PROMPT = """You filter Opencode conversation sessions for a user-simulator training dataset.
 
-Approve a session only if the visible turns look like a coherent real human<->assistant conversation and the early turns establish a useful interaction pattern.
+Think carefully about whether the transcript is useful training data for modeling a real user's next message.
 
-Approve when all of these are true:
-- the transcript is readable and coherent
-- the user appears to be making real requests or follow-ups
-- the assistant replies are visible natural-language responses, not just tool noise
-- the first few turns are enough to judge the interaction as useful training data
+Approve only when all of these are true:
+- the visible turns form a coherent real human<->assistant conversation
+- the user is making real requests, clarifications, or follow-ups
+- the assistant replies are visible natural-language responses, not tool noise
+- the first few turns provide a useful interaction pattern for training
 
 Reject when any of these are true:
 - the transcript is malformed, truncated, duplicated, or mostly boilerplate
 - the visible turns are dominated by pasted logs, giant tables, or raw artifacts with little conversational value
-- the conversation is too fragmentary or contextless to judge
-- the session is mostly workflow noise, synthetic control text, or obviously bad training data
+- the conversation is too fragmentary or contextless to judge well
+- the session is mostly workflow noise, synthetic control text, or otherwise poor training data
 
-Output exactly one word: APPROVE or REJECT."""
+Return exactly one minified JSON object and nothing else.
+Schema:
+{"approval":"APPROVE|REJECT","reason":"string"}
+
+The `approval` field must be either `APPROVE` or `REJECT`.
+The `reason` field must be a short plain-English explanation."""
+QUALITY_GATE_REPAIR_SYSTEM_PROMPT = """You repair malformed quality-gate outputs.
+
+Return exactly one minified JSON object and nothing else.
+Schema:
+{"approval":"APPROVE|REJECT","reason":"string"}
+"""
 
 
 @dataclass
@@ -196,6 +209,71 @@ def convert_messages_to_turns(messages: list[dict[str, Any]]) -> list[dict[str, 
     return turns
 
 
+def get_anthropic_text_response(response: Any) -> str:
+    text_blocks = []
+
+    for block in response.content:
+        text = getattr(block, "text", None)
+        if text:
+            text_blocks.append(text)
+
+    return "".join(text_blocks)
+
+
+def extract_json_object(response_text: str) -> str:
+    start_index = response_text.find("{")
+    end_index = response_text.rfind("}")
+
+    if start_index == -1 or end_index == -1 or end_index < start_index:
+        raise ValueError("No JSON object found in quality gate response")
+
+    return response_text[start_index : end_index + 1]
+
+
+def parse_quality_gate_response(response_text: str) -> dict[str, str]:
+    payload = json.loads(extract_json_object(response_text))
+    approval = payload.get("approval")
+    reason = payload.get("reason")
+
+    if approval not in {"APPROVE", "REJECT"}:
+        raise ValueError(f"Invalid approval value: {approval!r}")
+
+    if not isinstance(reason, str) or not reason.strip():
+        raise ValueError("Quality gate response must include a non-empty reason")
+
+    return {
+        "approval": approval,
+        "reason": reason,
+    }
+
+
+def repair_quality_gate_response(
+    turns: list[dict[str, str]], response_text: str
+) -> dict[str, str]:
+    selected_turns = turns[:QUALITY_GATE_MAX_TURNS]
+    prompt = "\n\n---\n\n".join(
+        [f"{turn['role'].upper()}:\n{turn['content']}" for turn in selected_turns]
+    )
+    repair_input = (
+        "Conversation:\n"
+        f"{prompt}\n\n"
+        "Malformed model output:\n"
+        f"{response_text or '<empty>'}"
+    )
+
+    repair_response = LLM_CLIENT.messages.create(
+        model=SONNET_MODEL,
+        max_tokens=QUALITY_GATE_REPAIR_MAX_TOKENS,
+        temperature=0,
+        system=QUALITY_GATE_REPAIR_SYSTEM_PROMPT,
+        messages=[
+            {"role": "user", "content": repair_input},
+        ],
+    )
+    repair_text = get_anthropic_text_response(repair_response).strip()
+    return parse_quality_gate_response(repair_text)
+
+
 def does_sonnet_approve(turns: list[dict[str, str]]) -> bool:
     selected_turns = turns[:QUALITY_GATE_MAX_TURNS]
     prompt = "\n\n---\n\n".join(
@@ -205,34 +283,22 @@ def does_sonnet_approve(turns: list[dict[str, str]]) -> bool:
     response = LLM_CLIENT.messages.create(
         model=SONNET_MODEL,
         max_tokens=4096,
+        temperature=1,
         system=QUALITY_GATE_SYSTEM_PROMPT,
         messages=[
             {"role": "user", "content": prompt},
         ],
         thinking={
             "type": "enabled",
-            "budget_tokens": 4000,
-        },
-        output_config={
-            "format": {
-                "type": "json_schema",
-                "schema": {
-                    "type": "object",
-                    "properties": {
-                        "approval": {
-                            "type": "string",
-                            "enum": ["APPROVE", "REJECT"],
-                            "description": "Whether the conversation is approved for training data",
-                        },
-                    },
-                },
-                "required": ["approval"],
-                "additionalProperties": False,
-            },
+            "budget_tokens": QUALITY_GATE_THINKING_BUDGET,
         },
     )
-    return json.loads(response.content[0].text.strip())["approval"].upper() == "APPROVE"
-
+    response_text = get_anthropic_text_response(response).strip()
+    try:
+        quality_gate_response = parse_quality_gate_response(response_text)
+    except (json.JSONDecodeError, ValueError):
+        quality_gate_response = repair_quality_gate_response(turns, response_text)
+    return quality_gate_response["approval"] == "APPROVE"
 
 
 def reverse_roles_in_turns(turns: list[dict[str, str]]) -> list[dict[str, str]]:
@@ -254,6 +320,7 @@ def reverse_roles_in_turns(turns: list[dict[str, str]]) -> list[dict[str, str]]:
 
     return reversed_turns
 
+
 if __name__ == "__main__":
     STATE.sessions = load_sessions()
     print("Number of sessions:", len(STATE.sessions))
@@ -272,7 +339,7 @@ if __name__ == "__main__":
         if not do_have_more_than_one_user_message(turns):
             print("Do not have more than one user message")
             continue
-        
+
         if not does_sonnet_approve(turns):
             print("Sonnet did not approve")
             continue
@@ -283,5 +350,5 @@ if __name__ == "__main__":
             print(f"{turn['role']}: {turn['content']}")
             print()
 
-        print('--------------------------------')
+        print("--------------------------------")
         exit()
