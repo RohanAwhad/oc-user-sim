@@ -7,6 +7,8 @@ from typing import Any
 DEFAULT_DATA_PATH = Path("exports") / "reversed_messages.jsonl"
 DEFAULT_OUTPUT_DIR = Path("outputs") / "lora-user-sim"
 DEFAULT_MODEL_PATH = "Qwen/Qwen2.5-1.5B-Instruct"
+DEFAULT_MICRO_BATCH_SIZE = 2
+DEFAULT_MAX_SEQ_LEN = 32768
 
 
 def parse_args() -> argparse.Namespace:
@@ -18,8 +20,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model-path", default=DEFAULT_MODEL_PATH)
     parser.add_argument("--num-epochs", type=int, default=1)
     parser.add_argument("--learning-rate", type=float, default=1e-4)
-    parser.add_argument("--micro-batch-size", type=int, default=1)
-    parser.add_argument("--max-seq-len", type=int, default=4096)
+    parser.add_argument(
+        "--micro-batch-size", type=int, default=DEFAULT_MICRO_BATCH_SIZE
+    )
+    parser.add_argument("--max-seq-len", type=int, default=DEFAULT_MAX_SEQ_LEN)
     parser.add_argument("--lora-r", type=int, default=16)
     parser.add_argument("--lora-alpha", type=int, default=32)
     parser.add_argument("--lora-dropout", type=float, default=0.0)
@@ -86,6 +90,7 @@ def main() -> None:
         return
 
     try:
+        import unsloth  # noqa: F401
         from training_hub import lora_sft
     except ImportError as exc:
         raise SystemExit(
