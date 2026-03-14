@@ -1,2 +1,6 @@
 __pycache__/
 exports/
+logs
+outputs
+unsloth_compiled_cache
+wandb
