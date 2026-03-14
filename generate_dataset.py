@@ -28,10 +28,12 @@ def load_sessions() -> list[dict[str, Any]]:
             """
         ).fetchall()
 
-    STATE.sessions = [dict(row) for row in rows]
-    print(len(STATE.sessions))
-    return STATE.sessions
+    sessions = [dict(row) for row in rows]
+    print(len(sessions))
+    return sessions
 
 
 if __name__ == "__main__":
-    load_sessions()
+    STATE.sessions = load_sessions()
+    sess = STATE.sessions[0]
+
