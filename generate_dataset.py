@@ -118,6 +118,26 @@ def get_message_content(message: dict[str, Any]) -> str:
     return "".join(text_parts)
 
 
+def merge_adjacent_same_role_turns(
+    turns: list[dict[str, str]],
+) -> list[dict[str, str]]:
+    merged_turns = []
+
+    for turn in turns:
+        if not merged_turns:
+            merged_turns.append(dict(turn))
+            continue
+
+        previous_turn = merged_turns[-1]
+        if previous_turn["role"] != turn["role"]:
+            merged_turns.append(dict(turn))
+            continue
+
+        previous_turn["content"] = f"{previous_turn['content']}\n\n{turn['content']}"
+
+    return merged_turns
+
+
 def convert_messages_to_turns(messages: list[dict[str, Any]]) -> list[dict[str, str]]:
     filtered_messages = drop_non_text_assistant_messages(messages)
     turns = []
@@ -140,11 +160,13 @@ def convert_messages_to_turns(messages: list[dict[str, Any]]) -> list[dict[str, 
 
 if __name__ == "__main__":
     STATE.sessions = load_sessions()
-    print(len(STATE.sessions))
-    messages = load_messages_for_session(STATE.sessions[34])
-    print(len(messages))
+    print('Number of sessions:', len(STATE.sessions))
+    messages = load_messages_for_session(STATE.sessions[4])
+    print('Number of messages:', len(messages))
     turns = convert_messages_to_turns(messages)
-    print(len(turns))
+    print('Number of turns:', len(turns))
+    turns = merge_adjacent_same_role_turns(turns)
+    print('Number of turns post merge:', len(turns))
     for turn in turns:
         print(f"{turn['role']}: {turn['content']}")
         print()
