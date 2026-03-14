@@ -138,6 +138,17 @@ def merge_adjacent_same_role_turns(
     return merged_turns
 
 
+def do_have_more_than_one_user_message(turns: list[dict[str, str]]) -> bool:
+    user_message_count = 0
+
+    for turn in turns:
+        if turn["role"] == "user":
+            user_message_count += 1
+            if user_message_count > 1:
+                return True
+    return False
+
+
 def convert_messages_to_turns(messages: list[dict[str, Any]]) -> list[dict[str, str]]:
     filtered_messages = drop_non_text_assistant_messages(messages)
     turns = []
@@ -160,13 +171,23 @@ def convert_messages_to_turns(messages: list[dict[str, Any]]) -> list[dict[str, 
 
 if __name__ == "__main__":
     STATE.sessions = load_sessions()
-    print('Number of sessions:', len(STATE.sessions))
-    messages = load_messages_for_session(STATE.sessions[4])
-    print('Number of messages:', len(messages))
-    turns = convert_messages_to_turns(messages)
-    print('Number of turns:', len(turns))
-    turns = merge_adjacent_same_role_turns(turns)
-    print('Number of turns post merge:', len(turns))
-    for turn in turns:
-        print(f"{turn['role']}: {turn['content']}")
-        print()
+    print("Number of sessions:", len(STATE.sessions))
+
+    for session in STATE.sessions:
+        messages = load_messages_for_session(session)
+        print("Number of messages:", len(messages))
+        turns = convert_messages_to_turns(messages)
+        print("Number of turns:", len(turns))
+        turns = merge_adjacent_same_role_turns(turns)
+        print("Number of turns post merge:", len(turns))
+        for turn in turns:
+            print(f"{turn['role']}: {turn['content']}")
+            print()
+
+        if do_have_more_than_one_user_message(turns):
+            print("Have more than one user message")
+            exit()
+        else:
+            print("Do not have more than one user message")
+
+        print('--------------------------------')
